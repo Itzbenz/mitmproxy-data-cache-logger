@@ -2,9 +2,9 @@ import datetime
 import hashlib
 import os
 
-
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.server_api import ServerApi
+
 
 def hash_data(binary: bytes) -> str:
     return hashlib.sha256(binary).hexdigest()
@@ -95,3 +95,35 @@ class MongoCacheProvider(AbstractCacheProvider):
         else:
             metadata["key"] = key
             await self.metadata_collection.insert_one(metadata)
+
+
+import json
+
+
+class FileCacheProvider(AbstractCacheProvider):
+    def __init__(self):
+        super().__init__()
+        self.cache_dir = os.getenv("CACHE_DIR") or "./cache"
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+    async def set(self, binary: bytes, index_data=None) -> str:
+        # index_data is ignored
+        hashed = hash_data(binary)
+        with open(os.path.join(self.cache_dir, hashed), "wb") as f:
+            f.write(binary)
+            return hashed
+
+    async def get(self, key: str) -> tuple[bytes, dict | None] | None:
+        with open(os.path.join(self.cache_dir, key), "rb") as f:
+            data = f.read()
+            return data, None
+
+    async def get_metadata(self, key: str) -> dict | None:
+        with open(os.path.join(self.cache_dir, key), "rb") as f:
+            raw_data = json.loads(f.read())
+            return raw_data
+
+    async def set_metadata(self, key: str, metadata: dict):
+        # set or update
+        with open(os.path.join(self.cache_dir, key), "wb") as f:
+            f.write(json.dumps(metadata).encode())

@@ -1,5 +1,6 @@
 import datetime
 import gzip
+import os
 import random
 import time
 import traceback
@@ -10,6 +11,11 @@ load_dotenv()
 
 from mitmproxy import http
 import cache
+import logging
+
+cache_logger = logging.getLogger("CacheManager")
+cache_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+cache_logger.warning("Log level is %s", logging.getLevelName(cache_logger.level))
 
 
 def guess_magic_bytes(magic_bytes):
@@ -94,9 +100,10 @@ class CacheManager:
         reason = reason.strip()
         should = "" != reason
         if should:
-            print(f"Caching {flow.request.pretty_url} because {reason}")
+            cache_logger.info(f"Caching {flow.request.pretty_url} because {reason}")
         else:
-            print(f"Potential caching {flow.request.method} {flow.request.pretty_url} {content_type} {cache_control}")
+            cache_logger.debug(
+                f"Potential caching {flow.request.method} {flow.request.pretty_url} {content_type} {cache_control}")
         return should, reason
 
     def guess_type(self, flow: http.HTTPFlow | None, data: bytes) -> str:
@@ -142,14 +149,14 @@ class CacheManager:
         if flow.response is None: return
         data = flow.response.content
         if data is None:
-            print(f"Data is None {flow.request.pretty_url}")
+            cache_logger.info(f"Data is None {flow.request.pretty_url}")
             return
         # check if compression is enabled
-        print(f"length {len(data)}")
+        # logger.debug(f"length {len(data)}")
         data = self.decompress(data, flow)
         data_integrity, integrity_reason = self.verify_data_integrity(flow, data)
         if not data_integrity:
-            print(f"Data integrity failed {flow.request.pretty_url} {integrity_reason}")
+            cache_logger.warning(f"Data integrity failed {flow.request.pretty_url} {integrity_reason}")
             return
         should_save, reason = self.should_save_data(flow, data)
         # save data
@@ -183,18 +190,18 @@ class CacheManager:
         is_zipped = magic_bytes == b"\x1f\x8b\x08\x00"
         content_encoding = flow.response.headers.get("Content-Encoding", "")
         if content_encoding == "": return data
-        print(f"Content encoding {content_encoding}")
+        cache_logger.debug(f"Content encoding {content_encoding} is_zipped {is_zipped}")
         if content_encoding == "gzip" or is_zipped:
             try:
                 data = gzip.decompress(data)
                 flow.response.headers["Content-Encoding"] = "identity"
                 flow.response.headers["Content-Length"] = str(len(data))
                 flow.response.content = data
-                print(f"Decompressed {flow.request.pretty_url}")
+                cache_logger.info(f"Decompressed {flow.request.pretty_url}")
             except Exception as e:
-                print(
-                    f"Failed to decompress {flow.request.pretty_url} {e} {flow.response.headers.get('Content-Encoding', '')}")
-                print(traceback.format_exc())
+                cache_logger.error(
+                    f"Failed to decompress {flow.request.pretty_url} {e} {flow.response.headers.get('Content-Encoding', '')}",
+                    exc_info=True)
         return data
 
     def verify_data_integrity(self, flow: http.HTTPFlow, data: bytes) -> tuple[bool, str]:
@@ -253,9 +260,11 @@ class CacheManager:
         metadata = await self.cache_provider.get_metadata(flow.request.pretty_url)
         if metadata is None: return None
         should_refresh, reason = self.should_refresh(metadata)
-        print(f"Should refresh {should_refresh} {reason}")
         if should_refresh:
+            cache_logger.info(f"Refreshing {flow.request.pretty_url} {reason}")
             return None
+        else:
+            cache_logger.debug(f"Should refresh {should_refresh} {reason}")
 
         data, index_data = await self.cache_provider.get(metadata["data_hash"])
         if data is None: return None
@@ -264,7 +273,6 @@ class CacheManager:
             'Content-Type': metadata["response"]["headers"].get('content-type') or "",
             'Content-Disposition': metadata["response"]["headers"].get('content-disposition') or ""
         }
-        # print(headers)
         return http.Response.make(
             status_code=200,
             content=data,
@@ -272,7 +280,15 @@ class CacheManager:
         )
 
 
-cache_provider = cache.MongoCacheProvider()
+cache_provider = None
+cache_provider_str = g = os.environ.get("CACHE_PROVIDER", "mongodb")
+if cache_provider_str == "mongodb":
+    cache_provider = cache.MongoCacheProvider()
+elif cache_provider_str == "file":
+    cache_provider = cache.FileCacheProvider()
+else:
+    raise Exception(f"Unknown cache provider {cache_provider_str}")
+
 cache_manager = CacheManager(cache_provider)
 
 
@@ -282,27 +298,24 @@ class CacheInterceptor:
 
     async def request(self, flow: http.HTTPFlow) -> None:
         start_time = time.time()
-        # upgrade_header = flow.request.headers.get('Upgrade', '')
-        # print(f"{flow.request.method} {flow.request.pretty_url}")
         if flow.request.method != "GET":
             return
 
         cached = await self.cache_manager.get_from_cache(flow)
         if cached is not None:
-            print(f"Cache hit! {flow.request.pretty_url} Elapsed {time.time() - start_time}")
+            cache_logger.info(f"Cache hit! {flow.request.pretty_url} Elapsed {time.time() - start_time}")
             cached.headers["Cached-By-Me"] = "very true"
             flow.response = cached
-            print(f"Request Elapsed {time.time() - start_time}")
+            cache_logger.debug(f"Request Elapsed {time.time() - start_time}")
 
     async def response(self, flow: http.HTTPFlow) -> None:
         start_time = time.time()
         if flow.request.method != "GET": return
         cached_by_me = flow.response.headers.get("Cached-By-Me", "")
         if cached_by_me == "very true":
-            # print("Very true")
             return
         await self.cache_manager.add_to_cache(flow)
-        print(f"Response Elapsed {time.time() - start_time}")
+        cache_logger.debug(f"Response Elapsed {time.time() - start_time}")
 
 
 addons = [

@@ -25,3 +25,6 @@ mitmdump -s main.py
 ## Supported database
 
 - [x] MongoDB
+- [ ] Redis
+- [ ] MySQL
+- [x] Filesystem
