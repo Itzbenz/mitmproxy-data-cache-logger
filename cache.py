@@ -2,12 +2,9 @@ import datetime
 import hashlib
 import os
 
-from dotenv import load_dotenv
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.server_api import ServerApi
-
-load_dotenv()
-
 
 def hash_data(binary: bytes) -> str:
     return hashlib.sha256(binary).hexdigest()

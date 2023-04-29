@@ -1,3 +1,4 @@
-mitmproxy
-motor
-python-dotenv
+mitmproxy~=9.0.1
+motor~=3.1.2
+python-dotenv~=1.0.0
+pymongo~=4.3.3

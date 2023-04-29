@@ -4,9 +4,11 @@ import random
 import time
 import traceback
 from typing import Dict
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from mitmproxy import http
-
 import cache
 
 
@@ -197,13 +199,14 @@ class CacheManager:
 
     def verify_data_integrity(self, flow: http.HTTPFlow, data: bytes) -> tuple[bool, str]:
         if data is None: return False, "Data is None"
-        if flow.response is None: return False,  "Response is None"
+        if flow.response is None: return False, "Response is None"
         if flow.response.content is None: return False, "Response content is None"
         if flow.response.content != data: return False, "Data is not equal to response content"
         # check length
         if len(data) == 0: return False, "Data length is 0"
         if flow.response.headers.get("Content-Length", "") == "": return True, "Content length is unknown"
-        if flow.response.headers.get("Content-Length", "") != str(len(data)): return False, f"Content length is not equal {flow.response.headers.get('Content-Length', '')} {len(data)}"
+        if flow.response.headers.get("Content-Length", "") != str(
+                len(data)): return False, f"Content length is not equal {flow.response.headers.get('Content-Length', '')} {len(data)}"
         return True, ""
 
     def should_refresh(self, metadata: Dict) -> tuple[bool, str]:
