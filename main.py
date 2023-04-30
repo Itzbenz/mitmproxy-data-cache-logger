@@ -25,8 +25,8 @@ cache_logger.warning("Strip cache headers is %s", STRIP_CACHE_HEADERS)
 
 # Mime, Extension
 def guess_magic_bytes(magic_bytes: bytes) -> tuple[str, str]:
-    new_guess = magic.from_buffer(magic_bytes, mime=True)
-    new_ext = mimetypes.guess_extension(new_guess)
+    new_guess = magic.from_buffer(magic_bytes, mime=True).strip()
+    new_ext = mimetypes.guess_extension(new_guess, strict=False)
     cache_logger.debug("Guessing %s as %s", magic_bytes, new_guess)
     return new_guess, new_ext
 
@@ -110,7 +110,7 @@ class CacheManager:
         }
         if data is not None:
             mime, file_ext = guess_magic_bytes(data)
-            metadata["type"] = file_ext
+            metadata["extension"] = file_ext
             metadata["mime"] = mime
             metadata["size"] = len(data)
         return metadata
@@ -192,18 +192,18 @@ class CacheManager:
         content_encoding = flow.response.headers.get("Content-Encoding", "")
 
         if content_encoding == "": return data
-        print(f"Content encoding {content_encoding} is_zipped {is_zipped}")
         if content_encoding == "gzip" and is_zipped:
             try:
                 data = gzip.decompress(data)
-                flow.response.headers["Content-Encoding"] = "identity"
-                flow.response.headers["Content-Length"] = str(len(data))
-                flow.response.content = data
+
                 cache_logger.info(f"Decompressed {flow.request.pretty_url}")
             except Exception as e:
                 cache_logger.error(
                     f"Failed to decompress {flow.request.pretty_url} {e} {flow.response.headers.get('Content-Encoding', '')}",
                     exc_info=True)
+        del flow.response.headers["Content-Encoding"]
+        flow.response.headers["content-length"] = str(len(data))
+        flow.response.content = data
         return data
 
     def verify_data_integrity(self, flow: http.HTTPFlow, data: bytes) -> tuple[bool, str]:

@@ -16,8 +16,8 @@ def generate_index_data(binary: bytes) -> dict:
         "data_size": len(binary),
     }
     if len(binary) > 0:
-        index_data["mime"] = magic.from_buffer(binary, mime=True)
-        index_data["extension"] = mimetypes.guess_extension(index_data["mime"])
+        index_data["mime"] = magic.from_buffer(binary, mime=True).strip()
+        index_data["extension"] = mimetypes.guess_extension(index_data["mime"].strip(), strict=False)
     return index_data
 
 
@@ -114,7 +114,6 @@ class FileCacheProvider(AbstractCacheProvider):
         index = generate_index_data(binary)
         hashed = index["key"]
         extension = index.get("extension", "")
-        extension = "." + extension if extension else ""
         with open(os.path.join(self.cache_dir, hashed + extension), "wb") as f:
             f.write(binary)
             return hashed
