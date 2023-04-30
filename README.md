@@ -11,6 +11,7 @@ Mitmproxy addon to log requests and responses to database, additionally serve re
 ## Run
 
 ```bash
+#active venv
 pip install -r requirements.txt
 mitmdump -s main.py
 ```

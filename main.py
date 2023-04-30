@@ -5,6 +5,8 @@ import random
 import time
 import traceback
 from typing import Dict
+
+import mitmproxy
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,6 +19,8 @@ cache_logger = logging.getLogger("CacheManager")
 cache_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 cache_logger.warning("Log level is %s", logging.getLevelName(cache_logger.level))
 
+STRIP_CACHE_HEADERS = os.getenv("STRIP_CACHE_HEADERS", "true").lower() == "true"
+cache_logger.warning("Strip cache headers is %s", STRIP_CACHE_HEADERS)
 
 def guess_magic_bytes(magic_bytes):
     file_ext = ""
@@ -145,6 +149,25 @@ class CacheManager:
         if key is None or key == "": raise Exception("Key is None")
         await self.cache_provider.set_metadata(key, metadata)
 
+    def try_strip_cache_header(self, headers: mitmproxy.http.Headers):
+        logging.debug(f"{STRIP_CACHE_HEADERS} {headers}")
+        if not STRIP_CACHE_HEADERS or not headers: return
+        headers.pop("Cache-Control", None)
+        headers.pop("cache-control", None)
+        headers.pop("Expires", None)
+        headers.pop("expires", None)
+        headers.pop("Pragma", None)
+        headers.pop("pragma", None)
+        headers.pop("Age", None)
+        headers.pop("age", None)
+        headers.pop("Warning", None)
+        headers.pop("warning", None)
+        headers.pop("Last-Modified", None)
+        headers.pop("last-modified", None)
+        headers.pop("ETag", None)
+        headers.pop("etag", None)
+        logging.debug(f"Stripped Cache Headers {headers}")
+
     async def add_to_cache(self, flow: http.HTTPFlow):
         if flow.response is None: return
         data = flow.response.content
@@ -183,10 +206,12 @@ class CacheManager:
         metadata["reason"] = reason
         metadata['last_modified'] = datetime.datetime.now().isoformat()
         await self.save_metadata(metadata)
+        self.try_strip_cache_header(flow.response.headers)
 
     # check for gzip
     def decompress(self, data, flow):
         magic_bytes = data[:4]
+
         is_zipped = magic_bytes == b"\x1f\x8b\x08\x00"
         content_encoding = flow.response.headers.get("Content-Encoding", "")
         if content_encoding == "": return data
@@ -218,7 +243,7 @@ class CacheManager:
 
     def should_refresh(self, metadata: Dict) -> tuple[bool, str]:
         chance = 0.1
-        reason = ""
+        reason = "Base chance"
         # Check if volatile
         if metadata.get("hash_changed_counter", 0) > 0:
             chance = chance + 0.2
@@ -254,7 +279,7 @@ class CacheManager:
                 chance = chance + 0.3
                 reason = reason + f"Cache-Control {cache_control} "
 
-        return random.random() < chance, reason + f"Chance {chance}"
+        return random.random() < chance, reason + f" Chance {chance}"
 
     async def get_from_cache(self, flow: http.HTTPFlow) -> http.Response | None:
         metadata = await self.cache_provider.get_metadata(flow.request.pretty_url)
@@ -269,10 +294,21 @@ class CacheManager:
         data, index_data = await self.cache_provider.get(metadata["data_hash"])
         if data is None: return None
         # only necessary headers
-        headers = {
-            'Content-Type': metadata["response"]["headers"].get('content-type') or "",
-            'Content-Disposition': metadata["response"]["headers"].get('content-disposition') or ""
-        }
+        headers = {}
+        headers['Content-Length'] = str(len(data))
+        headers["Cached-By-Me"] = "very true"
+        headers["Cache-Control"] = "no-store"
+        if metadata["response"]["headers"].get("content-encoding", "") != "":
+            headers['Content-Encoding'] = metadata["response"]["headers"].get("content-encoding", "")
+        if metadata["response"]["headers"].get("content-type", "") != "":
+            headers['Content-Type'] = metadata["response"]["headers"].get("content-type", "")
+
+        # Add access control headers if present
+        for header in metadata["response"]["headers"]:
+            if header.lower().startswith("access-control"):
+                headers[header] = metadata["response"]["headers"][header]
+
+        print(f"Returning from cache {headers}")
         return http.Response.make(
             status_code=200,
             content=data,
