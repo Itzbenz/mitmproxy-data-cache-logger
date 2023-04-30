@@ -22,6 +22,7 @@ cache_logger.warning("Log level is %s", logging.getLevelName(cache_logger.level)
 STRIP_CACHE_HEADERS = os.getenv("STRIP_CACHE_HEADERS", "true").lower() == "true"
 cache_logger.warning("Strip cache headers is %s", STRIP_CACHE_HEADERS)
 
+
 def guess_magic_bytes(magic_bytes):
     file_ext = ""
     if magic_bytes.startswith(b"\xff\xd8"):

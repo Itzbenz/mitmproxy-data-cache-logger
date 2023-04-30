@@ -1,9 +1,25 @@
 import datetime
 import hashlib
+import mimetypes
 import os
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.server_api import ServerApi
+
+import magic
+
+
+def generate_index_data(binary: bytes) -> dict:
+    index_data = {
+        "key": hash_data(binary),
+        "updated_at": datetime.datetime.now().isoformat(),
+        "data": binary,
+        "data_size": len(binary),
+    }
+    if len(binary) > 0:
+        index_data["mime"] = magic.from_buffer(binary, mime=True)
+        index_data["extension"] = mimetypes.guess_extension(index_data["mime"])
+    return index_data
 
 
 def hash_data(binary: bytes) -> str:
@@ -55,16 +71,13 @@ class MongoCacheProvider(AbstractCacheProvider):
     async def set(self, binary: bytes, index_data=None) -> str:
         if index_data is None:
             index_data = {}
-        hashed = hash_data(binary)
-
-        index_data["key"] = hashed
-        index_data["created_at"] = datetime.datetime.now().isoformat()
-        index_data["data"] = binary
-        index_data["data_size"] = len(binary)
+        index_data.update(generate_index_data(binary))
+        hashed = index_data["key"]
         # add or update
         if await self.data_collection.count_documents({"key": hashed}) > 0:
             await self.data_collection.update_one({"key": hashed}, {"$set": index_data})
         else:
+            index_data['created_at'] = datetime.datetime.now().isoformat()
             await self.data_collection.insert_one(index_data)
         return hashed
 
@@ -108,8 +121,11 @@ class FileCacheProvider(AbstractCacheProvider):
 
     async def set(self, binary: bytes, index_data=None) -> str:
         # index_data is ignored
-        hashed = hash_data(binary)
-        with open(os.path.join(self.cache_dir, hashed), "wb") as f:
+        index = generate_index_data(binary)
+        hashed = index["key"]
+        extension = index.get("extension", "")
+        extension = "." + extension if extension else ""
+        with open(os.path.join(self.cache_dir, hashed + extension), "wb") as f:
             f.write(binary)
             return hashed
 
