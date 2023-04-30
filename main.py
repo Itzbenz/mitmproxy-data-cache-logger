@@ -1,5 +1,6 @@
 import datetime
 import gzip
+import json
 import logging
 import mimetypes
 import os
@@ -22,6 +23,9 @@ cache_logger.warning("Log level is %s", logging.getLevelName(cache_logger.level)
 STRIP_CACHE_HEADERS = os.getenv("STRIP_CACHE_HEADERS", "true").lower() == "true"
 cache_logger.warning("Strip cache headers is %s", STRIP_CACHE_HEADERS)
 
+analytics_logger = logging.getLogger("Analytics")
+analytics_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+
 
 # Mime, Extension
 def guess_magic_bytes(magic_bytes: bytes) -> tuple[str, str]:
@@ -29,6 +33,26 @@ def guess_magic_bytes(magic_bytes: bytes) -> tuple[str, str]:
     new_ext = mimetypes.guess_extension(new_guess, strict=False)
     cache_logger.debug("Guessing %s as %s", magic_bytes, new_guess)
     return new_guess, new_ext
+
+
+def try_strip_cache_header(headers: mitmproxy.http.Headers):
+    logging.debug(f"{STRIP_CACHE_HEADERS} {headers}")
+    if not STRIP_CACHE_HEADERS or not headers: return
+    headers.pop("Cache-Control", None)
+    headers.pop("cache-control", None)
+    headers.pop("Expires", None)
+    headers.pop("expires", None)
+    headers.pop("Pragma", None)
+    headers.pop("pragma", None)
+    headers.pop("Age", None)
+    headers.pop("age", None)
+    headers.pop("Warning", None)
+    headers.pop("warning", None)
+    headers.pop("Last-Modified", None)
+    headers.pop("last-modified", None)
+    headers.pop("ETag", None)
+    headers.pop("etag", None)
+    logging.debug(f"Stripped Cache Headers {headers}")
 
 
 # noinspection PyMethodMayBeStatic
@@ -126,25 +150,6 @@ class CacheManager:
         if key is None or key == "": raise Exception("Key is None")
         await self.cache_provider.set_metadata(key, metadata)
 
-    def try_strip_cache_header(self, headers: mitmproxy.http.Headers):
-        logging.debug(f"{STRIP_CACHE_HEADERS} {headers}")
-        if not STRIP_CACHE_HEADERS or not headers: return
-        headers.pop("Cache-Control", None)
-        headers.pop("cache-control", None)
-        headers.pop("Expires", None)
-        headers.pop("expires", None)
-        headers.pop("Pragma", None)
-        headers.pop("pragma", None)
-        headers.pop("Age", None)
-        headers.pop("age", None)
-        headers.pop("Warning", None)
-        headers.pop("warning", None)
-        headers.pop("Last-Modified", None)
-        headers.pop("last-modified", None)
-        headers.pop("ETag", None)
-        headers.pop("etag", None)
-        logging.debug(f"Stripped Cache Headers {headers}")
-
     async def add_to_cache(self, flow: http.HTTPFlow):
         if flow.response is None: return
         data = flow.response.content
@@ -182,7 +187,7 @@ class CacheManager:
         metadata["reason"] = reason
         metadata['last_modified'] = datetime.datetime.now().isoformat()
         await self.save_metadata(metadata)
-        self.try_strip_cache_header(flow.response.headers)
+        try_strip_cache_header(flow.response.headers)
 
     # check for gzip
     def decompress(self, data, flow):
@@ -312,13 +317,14 @@ class CacheInterceptor:
         start_time = time.time()
         if flow.request.method != "GET":
             return
-
+        flow.intercept()
         cached = await self.cache_manager.get_from_cache(flow)
         if cached is not None:
             cache_logger.info(f"Cache hit! {flow.request.pretty_url} Elapsed {time.time() - start_time}")
             cached.headers["Cached-By-Me"] = "very true"
             flow.response = cached
             cache_logger.debug(f"Request Elapsed {time.time() - start_time}")
+        flow.resume()
 
     async def response(self, flow: http.HTTPFlow) -> None:
         start_time = time.time()
@@ -330,6 +336,84 @@ class CacheInterceptor:
         cache_logger.debug(f"Response Elapsed {time.time() - start_time}")
 
 
+randomURL = f"analytics-wwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+
+
+# noinspection PyMethodMayBeStatic
+class AnalyticsInterceptor:
+
+    async def response(self, flow: http.HTTPFlow) -> None:
+        # Hijack HTML
+        if "text/html" not in flow.response.headers.get("Content-Type", ""): return
+        if flow.response.text is None: return
+
+        # Inject script
+        script = None
+        with open("analytics.js", "r") as f:
+            script = f.read()
+        if script is None: return
+        script = script.replace("{{URL}}", flow.request.pretty_url)
+        script = script.replace("{{analyticsServerURL}}", randomURL + "/" + str(random.randint(0, 1000000000000)))
+        # check if have head
+        if "<head>" not in flow.response.text:
+            # inject anyway
+            flow.response.text = flow.response.text + f"<script>{script}</script>"
+        else:
+            flow.response.text = flow.response.text.replace("</head>",
+                                                            f"<script>{script}</script></head>")
+        bites = flow.response.text.encode("utf-8")
+        flow.response.headers["Content-Length"] = str(len(bites))
+        flow.response.headers["Content-Type"] = "text/html"
+        flow.response.content = bites
+        try_strip_cache_header(flow.response.headers)
+        analytics_logger.info(f"Analytics script injected {flow.request.pretty_url}")
+
+    def request(self, flow: http.HTTPFlow) -> None:
+        if randomURL not in flow.request.pretty_url: return
+
+        analytics_logger.info(f"[{flow.request.method}] {flow.request.pretty_url}")
+        if flow.request.text is None: return
+        flow.intercept()
+        analytics_logger.info(f"Analytics request intercepted {flow.request.pretty_url}")
+        analytics_logger.info(flow.request.text)
+
+        flow.response = http.Response.make(
+            status_code=200,
+            content=json.dumps({"status": "ok"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        flow.response.headers["Content-Length"] = str(len(flow.response.content))
+
+        flow.resume()
+
+
+def scrub_quic_headers(headers: mitmproxy.http.Headers) -> None:
+    if "h3" in headers.get("Upgrade", ""):
+        headers.pop("Upgrade")
+    if "h3" in headers.get("Alt-Svc", ""):
+        arrays = headers.get_all("Alt-Svc")
+        for array in arrays:
+            if "h3" in array:
+                arrays.remove(array)
+        headers.set_all("Alt-Svc", arrays)
+
+
+# noinspection PyMethodMayBeStatic
+class AntiQuic:
+    def udp_start(self, flow: mitmproxy.udp.UDPFlow) -> None:
+        print(f"UDP {flow.server_conn.address}")
+        if flow.server_conn.address[1] == 443 or flow.server_conn.address[1] == 80:
+            flow.kill()
+
+    def requestheaders(self, flow: http.HTTPFlow) -> None:
+        scrub_quic_headers(flow.request.headers)
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        scrub_quic_headers(flow.response.headers)
+
+
 addons = [
-    CacheInterceptor(cache_manager)
+    CacheInterceptor(cache_manager),
+    AnalyticsInterceptor(),
+    AntiQuic()
 ]
