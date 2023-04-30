@@ -3,10 +3,9 @@ import hashlib
 import mimetypes
 import os
 
+import magic
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.server_api import ServerApi
-
-import magic
 
 
 def generate_index_data(binary: bytes) -> dict:
@@ -73,12 +72,8 @@ class MongoCacheProvider(AbstractCacheProvider):
             index_data = {}
         index_data.update(generate_index_data(binary))
         hashed = index_data["key"]
-        # add or update
-        if await self.data_collection.count_documents({"key": hashed}) > 0:
-            await self.data_collection.update_one({"key": hashed}, {"$set": index_data})
-        else:
-            index_data['created_at'] = datetime.datetime.now().isoformat()
-            await self.data_collection.insert_one(index_data)
+        # update or create
+        await self.data_collection.update_one({"key": hashed}, {"$set": index_data}, upsert=True)
         return hashed
 
     async def get(self, key: str) -> tuple[bytes, dict | None] | None:
@@ -102,12 +97,7 @@ class MongoCacheProvider(AbstractCacheProvider):
 
     async def set_metadata(self, key: str, metadata: dict):
         # set or update
-
-        if await self.metadata_collection.count_documents({"key": key}) > 0:
-            await self.metadata_collection.update_one({"key": key}, {"$set": metadata})
-        else:
-            metadata["key"] = key
-            await self.metadata_collection.insert_one(metadata)
+        await self.metadata_collection.update_one({"key": key}, {"$set": metadata}, upsert=True)
 
 
 import json

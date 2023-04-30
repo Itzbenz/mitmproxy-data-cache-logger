@@ -1,20 +1,20 @@
 import datetime
 import gzip
+import logging
+import mimetypes
 import os
 import random
 import time
-import traceback
 from typing import Dict
 
+import magic
 import mitmproxy
 from dotenv import load_dotenv
+from mitmproxy import http
+
+import cache
 
 load_dotenv()
-
-from mitmproxy import http
-import cache
-import logging
-
 cache_logger = logging.getLogger("CacheManager")
 cache_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 cache_logger.warning("Log level is %s", logging.getLevelName(cache_logger.level))
@@ -23,41 +23,12 @@ STRIP_CACHE_HEADERS = os.getenv("STRIP_CACHE_HEADERS", "true").lower() == "true"
 cache_logger.warning("Strip cache headers is %s", STRIP_CACHE_HEADERS)
 
 
-def guess_magic_bytes(magic_bytes):
-    file_ext = ""
-    if magic_bytes.startswith(b"\xff\xd8"):
-        file_ext = ".jpg"
-    elif magic_bytes.startswith(b"\x89\x50\x4e\x47"):
-        file_ext = ".png"
-    elif magic_bytes.startswith(b"\x47\x49\x46"):
-        file_ext = ".gif"
-    elif magic_bytes.startswith(b"\x52\x49\x46\x46"):
-        file_ext = ".webp"
-    elif magic_bytes.startswith(b"\x46\x4c\x56"):
-        file_ext = ".flv"
-    elif magic_bytes.startswith(b"\x25\x50\x44\x46"):
-        file_ext = ".pdf"
-    elif magic_bytes.startswith(b"\x1a\x45\xdf\xa3"):
-        file_ext = ".webm"
-    elif magic_bytes.startswith(b"\x66\x74\x79\x70"):
-        file_ext = ".mp4"
-    elif magic_bytes.startswith(b"\x4f\x67\x67\x53"):
-        file_ext = ".ogg"
-    elif magic_bytes.startswith(b"\xff\xfb"):
-        file_ext = ".mp3"
-    elif magic_bytes.startswith(b"\x4d\x5a"):
-        file_ext = ".mid"
-    elif magic_bytes.startswith(b"\x50\x4b"):
-        file_ext = ".zip"
-    elif magic_bytes.startswith(b"\x1f\x8b"):
-        file_ext = ".gz"
-    elif magic_bytes.startswith(b"\x42\x5a"):
-        file_ext = ".bz2"
-    elif magic_bytes.startswith(b"\x37\x7a\xbc\xaf\x27\x1c"):
-        file_ext = ".7z"
-    else:
-        file_ext = ".bin"
-    return file_ext
+# Mime, Extension
+def guess_magic_bytes(magic_bytes: bytes) -> tuple[str, str]:
+    new_guess = magic.from_buffer(magic_bytes, mime=True)
+    new_ext = mimetypes.guess_extension(new_guess)
+    cache_logger.debug("Guessing %s as %s", magic_bytes, new_guess)
+    return new_guess, new_ext
 
 
 # noinspection PyMethodMayBeStatic
@@ -68,17 +39,32 @@ class CacheManager:
     # doesn't adhere to cache control only care about the content
     def should_save_data(self, flow: http.HTTPFlow, data: bytes):
         content_type = flow.response.headers.get("Content-Type", "")
-        cache_control = flow.response.headers.get("Cache-Control", "")
-        magic_bytes = data[:4]
-        file_ext = guess_magic_bytes(magic_bytes)
+        mime, file_ext = guess_magic_bytes(data)
         reason = ""
+        if content_type != "" and content_type != mime:
+            if content_type.startswith("image") or content_type.startswith("video") or content_type.startswith("audio"):
+                cache_logger.warning(flow.request.pretty_url)
+                cache_logger.warning(f"Content type {content_type} != {mime}")
+                # save file
+                # if content type is "image/png" image is the directory and png is the filename
 
-        if content_type.startswith("image"):
-            reason = reason + f"Is {content_type} "
-        if file_ext != ".bin":
-            reason = reason + f"File extension {file_ext}"
+                directory = content_type.split("/")[0]
+                filename = content_type.split("/")[1]
+                if not os.path.exists(directory):
+                    os.makedirs(directory)
+                with open(f"{directory}/{filename}", "wb") as f:
+                    f.write(data)
+        cache_logger.debug(f"Content type {content_type} Magic: {mime} {file_ext}")
+        if mime is None or mime == "":
+            mime = content_type
+        if mime.startswith("image") or mime.startswith("video") or mime.startswith("audio"):
+            reason = reason + f"Is {mime} "
+        # if file_ext != ".bin":
+        #    reason = reason + f"File extension {file_ext}"
         reason = reason.strip()
         return "" != reason, reason
+
+    # Extended version, onl
 
     # adhere to cache control
     def should_cache(self, flow: http.HTTPFlow, data: bytes):
@@ -111,33 +97,23 @@ class CacheManager:
                 f"Potential caching {flow.request.method} {flow.request.pretty_url} {content_type} {cache_control}")
         return should, reason
 
-    def guess_type(self, flow: http.HTTPFlow | None, data: bytes) -> str:
-        magic_bytes = data[:4]
-        file_ext = guess_magic_bytes(magic_bytes)
-        if flow is not None and file_ext == ".bin":
-            content_type = flow.response.headers.get("Content-Type", "")
-            file_ext = content_type.split("/")[-1]
-            # have plus ?
-            if "+" in file_ext:
-                file_ext = file_ext.split("+")[-1]
-            if file_ext == "":
-                file_ext = "bin"
-
-            file_ext = "." + file_ext
-        return file_ext[1:]
-
     def generate_metadata(self, flow: http.HTTPFlow, data: bytes | None) -> Dict:
-        return {
+        metadata = {
             "url": flow.request.pretty_url,
             "method": flow.request.method,
             "headers": flow.request.headers,
-            "extension": self.guess_type(flow, data),
             "response": {
                 "http_version": flow.response.http_version,
                 "headers": flow.response.headers,
                 "status_code": flow.response.status_code,
             }
         }
+        if data is not None:
+            mime, file_ext = guess_magic_bytes(data)
+            metadata["type"] = file_ext
+            metadata["mime"] = mime
+            metadata["size"] = len(data)
+        return metadata
 
     async def generate_or_pull_metadata(self, flow: http.HTTPFlow, data: bytes | None) -> Dict:
         metadata = await self.cache_provider.get_metadata(flow.request.pretty_url)
@@ -186,7 +162,6 @@ class CacheManager:
         # save data
         index_data = {
             "content-type": flow.response.headers.get("Content-Type", ""),
-            "extension": self.guess_type(flow, data)
         }
         hashed = None
         if should_save:  # save regardless of cache control
@@ -215,9 +190,10 @@ class CacheManager:
 
         is_zipped = magic_bytes == b"\x1f\x8b\x08\x00"
         content_encoding = flow.response.headers.get("Content-Encoding", "")
+
         if content_encoding == "": return data
-        cache_logger.debug(f"Content encoding {content_encoding} is_zipped {is_zipped}")
-        if content_encoding == "gzip" or is_zipped:
+        print(f"Content encoding {content_encoding} is_zipped {is_zipped}")
+        if content_encoding == "gzip" and is_zipped:
             try:
                 data = gzip.decompress(data)
                 flow.response.headers["Content-Encoding"] = "identity"
@@ -309,7 +285,6 @@ class CacheManager:
             if header.lower().startswith("access-control"):
                 headers[header] = metadata["response"]["headers"][header]
 
-        print(f"Returning from cache {headers}")
         return http.Response.make(
             status_code=200,
             content=data,
