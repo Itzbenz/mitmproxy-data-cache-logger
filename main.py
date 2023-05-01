@@ -65,15 +65,18 @@ class CacheManager:
         content_type = flow.response.headers.get("Content-Type", "")
         mime, file_ext = guess_magic_bytes(data)
         reason = ""
+        is_media = lambda x: "image" in x or "video" in x or "audio" in x
         if content_type != "" and mime not in content_type:
-            if content_type.startswith("image") or content_type.startswith("video") or content_type.startswith("audio"):
+            if is_media(content_type) or is_media(mime):
                 cache_logger.warning(flow.request.pretty_url)
                 cache_logger.warning(f"Content type {content_type} != {mime}")
         cache_logger.debug(f"Content type {content_type} Magic: {mime} {file_ext}")
         if mime is None or mime == "":
             mime = content_type
-        if mime.startswith("image") or mime.startswith("video") or mime.startswith("audio"):
-            reason = reason + f"Is {mime} "
+        if is_media(mime):
+            reason = reason + f"Mime is {mime} "
+        if is_media(content_type):
+            reason = reason + f"Content is {content_type} "
         # if file_ext != ".bin":
         #    reason = reason + f"File extension {file_ext}"
         reason = reason.strip()
@@ -180,6 +183,7 @@ class CacheManager:
         metadata["data_hash"] = hashed
         metadata["reason"] = reason
         metadata['last_modified'] = datetime.datetime.now().isoformat()
+        metadata['last_accessed'] = metadata['last_modified']
         await self.save_metadata(metadata)
         try_strip_cache_header(flow.response.headers)
 
@@ -271,6 +275,7 @@ class CacheManager:
         if data is None: return None
         # Increment hits
         metadata["hits"] = metadata.get("hits", 0) + 1
+        metadata['last_accessed'] = datetime.datetime.now().isoformat()
         await self.save_metadata(metadata)
         # only necessary headers
         headers = {}

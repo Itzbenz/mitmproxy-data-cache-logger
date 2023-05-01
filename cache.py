@@ -60,7 +60,8 @@ class MongoCacheProvider(AbstractCacheProvider):
     def __init__(self):
         super().__init__()
         mongo_url = os.getenv("MONGO_URL") or "mongodb://localhost:27017"
-        self.client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url, server_api=ServerApi("1"))
+        compressor = os.getenv("MONGO_COMPRESSOR") or "zstd"
+        self.client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url, server_api=ServerApi("1"), compressors=compressor, zlibCompressionLevel=9)
         self.db = self.client[os.getenv("MONGO_DB_NAME") or "mitmproxy"]
         self.metadata_collection = self.db["metadata"]
         self.data_collection = self.db["data"]

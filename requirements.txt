@@ -4,3 +4,4 @@ python-dotenv~=1.0.0
 pymongo~=4.3.3
 python-magic
 python-magic-bin==0.4.14
+zstandard==0.21.0
