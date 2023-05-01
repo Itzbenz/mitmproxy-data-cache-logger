@@ -83,6 +83,11 @@ class MongoCacheProvider(AbstractCacheProvider):
         data = raw_data["data"]
         if data is None:
             return None
+
+        await self.data_collection.update_one({"key": key}, {"$set": {
+            'last_accessed': datetime.datetime.now().isoformat(),
+            'hits': raw_data.get('hits', 0) + 1
+        }})
         index_data = raw_data.copy()
         index_data.pop("_id")
         index_data.pop("data")

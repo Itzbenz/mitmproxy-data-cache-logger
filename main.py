@@ -65,19 +65,10 @@ class CacheManager:
         content_type = flow.response.headers.get("Content-Type", "")
         mime, file_ext = guess_magic_bytes(data)
         reason = ""
-        if content_type != "" and content_type != mime:
+        if content_type != "" and mime not in content_type:
             if content_type.startswith("image") or content_type.startswith("video") or content_type.startswith("audio"):
                 cache_logger.warning(flow.request.pretty_url)
                 cache_logger.warning(f"Content type {content_type} != {mime}")
-                # save file
-                # if content type is "image/png" image is the directory and png is the filename
-
-                directory = content_type.split("/")[0]
-                filename = content_type.split("/")[1]
-                if not os.path.exists(directory):
-                    os.makedirs(directory)
-                with open(f"{directory}/{filename}", "wb") as f:
-                    f.write(data)
         cache_logger.debug(f"Content type {content_type} Magic: {mime} {file_ext}")
         if mime is None or mime == "":
             mime = content_type
@@ -97,15 +88,17 @@ class CacheManager:
         cache_control = flow.response.headers.get("Cache-Control", "")
         content_type = flow.response.headers.get("Content-Type", "")
         should_cache_by_header = True
-        if cache_control.startswith("no-cache"):
+        if "no-cache" in cache_control:
             should_cache_by_header = False
-        if cache_control.startswith("private"):
+        if "private" in cache_control:
             should_cache_by_header = False
-        if cache_control.startswith("no-store"):
+        if "no-store" in cache_control:
             should_cache_by_header = False
-        if cache_control.startswith("max-age=0"):
+        if "must-revalidate" in cache_control:
             should_cache_by_header = False
-        if cache_control == "":
+        if "max-age=0" in cache_control:
+            should_cache_by_header = False
+        if cache_control.strip() == "":
             should_cache_by_header = False
 
         # if content type is image or file_ext isn't bin then save file
@@ -126,6 +119,7 @@ class CacheManager:
             "url": flow.request.pretty_url,
             "method": flow.request.method,
             "headers": flow.request.headers,
+            "hits": 0,
             "response": {
                 "http_version": flow.response.http_version,
                 "headers": flow.response.headers,
@@ -275,6 +269,9 @@ class CacheManager:
 
         data, index_data = await self.cache_provider.get(metadata["data_hash"])
         if data is None: return None
+        # Increment hits
+        metadata["hits"] = metadata.get("hits", 0) + 1
+        await self.save_metadata(metadata)
         # only necessary headers
         headers = {}
         headers['Content-Length'] = str(len(data))
@@ -414,6 +411,6 @@ class AntiQuic:
 
 addons = [
     CacheInterceptor(cache_manager),
-    AnalyticsInterceptor(),
+    #AnalyticsInterceptor(),
     AntiQuic()
 ]
