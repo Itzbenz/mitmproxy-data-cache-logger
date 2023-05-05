@@ -91,6 +91,20 @@ class CacheManager:
         cache_control = flow.response.headers.get("Cache-Control", "")
         content_type = flow.response.headers.get("Content-Type", "")
         should_cache_by_header = True
+
+        if cache_control.strip() == "":
+            # check if html
+            if content_type is not None and "text/html" in content_type:
+                # should_cache_by_header = False
+                reason = reason + f"Content type {content_type} "
+                # set expire header if not set
+                if flow.response.headers.get("Expires", "") == "":
+                    # RFC 2616
+                    flow.response.headers["Expires"] = (
+                                datetime.datetime.utcnow() + datetime.timedelta(minutes=2)).strftime(
+                        "%a, %d %b %Y %H:%M:%S GMT")
+
+            should_cache_by_header = False
         if "no-cache" in cache_control:
             should_cache_by_header = False
         if "private" in cache_control:
@@ -100,8 +114,6 @@ class CacheManager:
         if "must-revalidate" in cache_control:
             should_cache_by_header = False
         if "max-age=0" in cache_control:
-            should_cache_by_header = False
-        if cache_control.strip() == "":
             should_cache_by_header = False
 
         # if content type is image or file_ext isn't bin then save file
@@ -248,11 +260,15 @@ class CacheManager:
         # Check if response header Expires
         expired = metadata["response"]["headers"].get("Expires", None)
         if expired is not None:
-            if expired < datetime.datetime.now().isoformat():
+            # RFC 2616
+            if datetime.datetime.strptime(expired, "%a, %d %b %Y %H:%M:%S %Z") < datetime.datetime.now():
                 chance = chance + 0.3
-                reason = reason + f"Expired {expired} "
+                # calculate seconds since
+                seconds = (datetime.datetime.now() - datetime.datetime.strptime(expired,
+                                                                                "%a, %d %b %Y %H:%M:%S %Z")).seconds
+                reason = reason + f"Expired since {seconds} seconds ago "
 
-        # Check if response header Cache-Control
+                # Check if response header Cache-Control
         cache_control = metadata["response"]["headers"].get("Cache-Control", None)
         if cache_control is not None:
             if "no-cache" in cache_control or "no-store" in cache_control:
@@ -416,6 +432,6 @@ class AntiQuic:
 
 addons = [
     CacheInterceptor(cache_manager),
-    #AnalyticsInterceptor(),
+    # AnalyticsInterceptor(),
     AntiQuic()
 ]
