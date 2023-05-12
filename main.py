@@ -274,7 +274,11 @@ class CacheManager:
             if "no-cache" in cache_control or "no-store" in cache_control:
                 chance = chance + 0.3
                 reason = reason + f"Cache-Control {cache_control} "
-
+        # Check status code
+        status_code = metadata["response"]["status_code"]
+        if status_code != 200:
+            chance = chance + 0.3
+            reason = reason + f"Status code {status_code} "
         return random.random() < chance, reason + f" Chance {chance}"
 
     async def get_from_cache(self, flow: http.HTTPFlow) -> http.Response | None:
