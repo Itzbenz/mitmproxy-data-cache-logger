@@ -1,3 +1,5 @@
 venv
 .idea
 .env
+itsthesame.json
+domain_matrix_aliases.txt

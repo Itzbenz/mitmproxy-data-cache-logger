@@ -27,6 +27,31 @@ analytics_logger = logging.getLogger("Analytics")
 analytics_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
 
+domain_matrix_aliases = {}
+
+# Load from file, read line by line
+with open("domain_matrix_aliases.txt", "r") as f:
+    """
+    Example
+    
+    f1.example.com,f2.example.com,f3.example.com,f4.example.com
+    
+    convert into matrix
+        
+    f1.example.com: f2.example.com, f3.example.com, f4.example.com
+    f2.example.com: f1.example.com, f3.example.com, f4.example.com
+    f3.example.com: f1.example.com, f2.example.com, f4.example.com
+    f4.example.com: f1.example.com, f2.example.com, f3.example.com
+    ...
+    """
+    for line in f.readlines():
+        domains = line.strip().split(",")
+        for domain in domains:
+            domain_matrix_aliases[domain] = domains.copy()
+            domain_matrix_aliases[domain].remove(domain)
+
+cache_logger.info("Computed %s domain matrix aliases", len(domain_matrix_aliases))
+
 # Mime, Extension
 def guess_magic_bytes(magic_bytes: bytes) -> tuple[str, str]:
     new_guess = magic.from_buffer(magic_bytes, mime=True).strip()
@@ -101,7 +126,7 @@ class CacheManager:
                 if flow.response.headers.get("Expires", "") == "":
                     # RFC 2616
                     flow.response.headers["Expires"] = (
-                                datetime.datetime.utcnow() + datetime.timedelta(minutes=2)).strftime(
+                            datetime.datetime.utcnow() + datetime.timedelta(minutes=2)).strftime(
                         "%a, %d %b %Y %H:%M:%S GMT")
 
             should_cache_by_header = False
@@ -139,7 +164,8 @@ class CacheManager:
                 "http_version": flow.response.http_version,
                 "headers": flow.response.headers,
                 "status_code": flow.response.status_code,
-            }
+            },
+
         }
         if data is not None:
             mime, file_ext = guess_magic_bytes(data)
@@ -150,14 +176,50 @@ class CacheManager:
 
     async def generate_or_pull_metadata(self, flow: http.HTTPFlow, data: bytes | None) -> Dict:
         metadata = await self.cache_provider.get_metadata(flow.request.pretty_url)
+        og_metadata = self.generate_metadata(flow, data)
         if metadata is None:
-            metadata = self.generate_metadata(flow, data)
+            metadata = og_metadata
+        # check for missing keys
+        for key in og_metadata.keys():
+            if key not in metadata:
+                metadata[key] = og_metadata[key]
         return metadata
 
     async def save_metadata(self, metadata: Dict):
         key = metadata["url"]
         if key is None or key == "": raise Exception("Key is None")
         await self.cache_provider.set_metadata(key, metadata)
+    """
+    Needed to deduplicate domains e.g
+    f1.example.com
+    f2.example.com
+    f3.example.com
+    those are all the same domain, instead of storing them individually
+    we store f1.example.com with f2.example.com and f3.example.com
+    or f2.example.com with f1.example.com and f3.example.com
+    
+    also used for metadata
+    """
+    async def get_domain_metadata(self, domain: str) -> Dict:
+        og_metadata = {
+            "domain": domain,
+            "hits": 0,
+            "aliases": [domain],
+            "last_hit": None,
+        }
+        metadata = await self.cache_provider.get_metadata(domain, "domain")
+        if metadata is None:
+            metadata = og_metadata
+        # check for missing keys
+        for key in og_metadata.keys():
+            if key not in metadata:
+                metadata[key] = og_metadata[key]
+        return metadata
+
+    async def save_domain_metadata(self, metadata: Dict):
+        key = metadata["domain"]
+        if key is None or key == "": raise Exception("Key is None")
+        await self.cache_provider.set_metadata(key, metadata, "domain")
 
     async def add_to_cache(self, flow: http.HTTPFlow):
         if flow.response is None: return
@@ -189,14 +251,30 @@ class CacheManager:
             hashed = await self.cache_provider.set(data, index_data)
 
         metadata = await self.generate_or_pull_metadata(flow, data)
+        domain_metadata = await self.get_domain_metadata(flow.request.pretty_host)
+        domain_metadata["last_hit"] = datetime.datetime.now().isoformat()
+        domain_metadata["hits"] = domain_metadata.get("hits", 0) + 1
+        aliases = domain_metadata.get("aliases", [])
+        if flow.request.pretty_host not in aliases:
+            aliases.append(flow.request.pretty_host)
+        for alias in domain_matrix_aliases.get(flow.request.pretty_host, []):
+            if alias not in aliases:
+                aliases.append(alias)
+        domain_metadata["aliases"] = aliases
 
+        await self.save_domain_metadata(domain_metadata)
         hash_changed = metadata.get("data_hash", hashed) != hashed
         metadata["hash_changed_counter"] = metadata.get("hash_changed_counter", 0) + 1 if hash_changed else 0
         metadata["data_hash"] = hashed
         metadata["reason"] = reason
         metadata['last_modified'] = datetime.datetime.now().isoformat()
         metadata['last_accessed'] = metadata['last_modified']
-        await self.save_metadata(metadata)
+        for alias in aliases:
+            aliased_metadata = dict(metadata)
+            aliased_metadata["url"] = flow.request.pretty_url.replace(flow.request.pretty_host, alias)
+            await self.save_metadata(metadata)
+        if len(aliases) > 1:
+            cache_logger.info(f"Saved {len(aliases)} aliases for {flow.request.pretty_host}")
         try_strip_cache_header(flow.response.headers)
 
     # check for gzip
@@ -235,7 +313,7 @@ class CacheManager:
 
     def should_refresh(self, metadata: Dict) -> tuple[bool, str]:
         chance = 0.1
-        reason = "Base chance"
+        reason = "Base chance "
         # Check if volatile
         if metadata.get("hash_changed_counter", 0) > 0:
             chance = chance + 0.2
@@ -262,7 +340,7 @@ class CacheManager:
         if expired is not None:
             # RFC 2616
             if datetime.datetime.strptime(expired, "%a, %d %b %Y %H:%M:%S %Z") < datetime.datetime.now():
-                chance = chance + 0.3
+                chance = chance + 0.18
                 # calculate seconds since
                 seconds = (datetime.datetime.now() - datetime.datetime.strptime(expired,
                                                                                 "%a, %d %b %Y %H:%M:%S %Z")).seconds
@@ -274,6 +352,9 @@ class CacheManager:
             if "no-cache" in cache_control or "no-store" in cache_control:
                 chance = chance + 0.3
                 reason = reason + f"Cache-Control {cache_control} "
+        else:
+            chance = chance + 0.15
+            reason = reason + f"Cache-Control is None "
         # Check status code
         status_code = metadata["response"]["status_code"]
         if status_code != 200:

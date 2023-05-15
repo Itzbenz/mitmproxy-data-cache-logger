@@ -49,10 +49,10 @@ class AbstractCacheProvider:
     async def get(self, key: str) -> tuple[bytes, dict | None] | None:
         pass
 
-    async def set_metadata(self, key: str, metadata: dict):
+    async def set_metadata(self, key: str, metadata: dict, table: str = "metadata"):
         pass
 
-    async def get_metadata(self, key: str) -> dict | None:
+    async def get_metadata(self, key: str, table: str = "metadata") -> dict | None:
         pass
 
 
@@ -61,11 +61,10 @@ class MongoCacheProvider(AbstractCacheProvider):
         super().__init__()
         mongo_url = os.getenv("MONGO_URL") or "mongodb://localhost:27017"
         compressor = os.getenv("MONGO_COMPRESSOR") or "zstd"
-        self.client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url, server_api=ServerApi("1"), compressors=compressor, zlibCompressionLevel=9)
+        self.client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url, server_api=ServerApi("1"),
+                                                             compressors=compressor, zlibCompressionLevel=9)
         self.db = self.client[os.getenv("MONGO_DB_NAME") or "mitmproxy"]
-        self.metadata_collection = self.db["metadata"]
         self.data_collection = self.db["data"]
-        self.metadata_collection.create_index("key", unique=True)
         self.data_collection.create_index("key", unique=True)
 
     async def set(self, binary: bytes, index_data=None) -> str:
@@ -95,15 +94,20 @@ class MongoCacheProvider(AbstractCacheProvider):
         index_data.pop("key")
         return data, raw_data
 
-    async def get_metadata(self, key: str) -> dict | None:
-        metadata = await self.metadata_collection.find_one({"key": key})
+    async def get_metadata(self, key: str, table: str = "metadata") -> dict | None:
+        collection = self.db[table]
+        collection.create_index("key", unique=True)
+
+        metadata = await collection.find_one({"key": key})
         if metadata is None:
             return None
         return metadata
 
-    async def set_metadata(self, key: str, metadata: dict):
+    async def set_metadata(self, key: str, metadata: dict, table: str = "metadata"):
         # set or update
-        await self.metadata_collection.update_one({"key": key}, {"$set": metadata}, upsert=True)
+        collection = self.db[table]
+        collection.create_index("key", unique=True)
+        await collection.update_one({"key": key}, {"$set": metadata}, upsert=True)
 
 
 import json
