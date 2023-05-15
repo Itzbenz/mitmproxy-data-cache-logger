@@ -312,13 +312,13 @@ class CacheManager:
         return True, ""
 
     def should_refresh(self, metadata: Dict) -> tuple[bool, str]:
-        chance = 0.1
+        chance = 0.08
         reason = "Base chance "
         # Check if volatile
         if metadata.get("hash_changed_counter", 0) > 0:
             chance = chance + 0.2
             reason = reason + f"Hash changed {metadata.get('hash_changed_counter', 0)} times "
-
+        is_image = "image" in metadata.get("content-type", "")
         # Check last_modified
         if metadata['last_modified'] is None:
             reason = reason + f"Last modified is None "
@@ -352,7 +352,9 @@ class CacheManager:
             if "no-cache" in cache_control or "no-store" in cache_control:
                 chance = chance + 0.3
                 reason = reason + f"Cache-Control {cache_control} "
-        else:
+            else:
+                chance = chance - 0.08
+        elif not is_image:
             chance = chance + 0.15
             reason = reason + f"Cache-Control is None "
         # Check status code
