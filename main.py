@@ -26,7 +26,6 @@ cache_logger.warning("Strip cache headers is %s", STRIP_CACHE_HEADERS)
 analytics_logger = logging.getLogger("Analytics")
 analytics_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
-
 domain_matrix_aliases = {}
 
 # Load from file, read line by line
@@ -51,6 +50,7 @@ with open("domain_matrix_aliases.txt", "r") as f:
             domain_matrix_aliases[domain].remove(domain)
 
 cache_logger.info("Computed %s domain matrix aliases", len(domain_matrix_aliases))
+
 
 # Mime, Extension
 def guess_magic_bytes(magic_bytes: bytes) -> tuple[str, str]:
@@ -189,6 +189,7 @@ class CacheManager:
         key = metadata["url"]
         if key is None or key == "": raise Exception("Key is None")
         await self.cache_provider.set_metadata(key, metadata)
+
     """
     Needed to deduplicate domains e.g
     f1.example.com
@@ -200,6 +201,7 @@ class CacheManager:
     
     also used for metadata
     """
+
     async def get_domain_metadata(self, domain: str) -> Dict:
         og_metadata = {
             "domain": domain,
