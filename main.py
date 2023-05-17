@@ -274,6 +274,7 @@ class CacheManager:
         for alias in aliases:
             aliased_metadata = dict(metadata)
             aliased_metadata["url"] = flow.request.pretty_url.replace(flow.request.pretty_host, alias)
+            cache_logger.info(f"Saving alias {alias} for {aliased_metadata['url']}")
             await self.save_metadata(metadata)
         if len(aliases) > 1:
             cache_logger.info(f"Saved {len(aliases)} aliases for {flow.request.pretty_host}")
@@ -355,7 +356,7 @@ class CacheManager:
                 chance = chance + 0.3
                 reason = reason + f"Cache-Control {cache_control} "
             else:
-                chance = chance - 0.08
+                chance = chance - 0.18
         elif not is_image:
             chance = chance + 0.15
             reason = reason + f"Cache-Control is None "
